@@ -26,6 +26,7 @@ import static lombok.core.handlers.HandlerUtil.*;
 import static lombok.javac.handlers.JavacHandlerUtil.*;
 
 import java.util.Collection;
+import java.util.regex.Pattern;
 
 import lombok.AccessLevel;
 import lombok.ConfigurationKeys;
@@ -61,6 +62,7 @@ import com.sun.tools.javac.util.Name;
  */
 @ProviderFor(JavacAnnotationHandler.class)
 public class HandleSetter extends JavacAnnotationHandler<Setter> {
+	private Boolean hasNodeExistsOnlySetNonNullAnnotation = false;
 	public void generateSetterForType(JavacNode typeNode, JavacNode errorNode, AccessLevel level, boolean checkForTypeLevelSetter, List<JCAnnotation> onMethod, List<JCAnnotation> onParam) {
 		if (checkForTypeLevelSetter) {
 			if (hasAnnotation(Setter.class, typeNode)) {
@@ -68,7 +70,7 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 				return;
 			}
 		}
-		
+		this.hasNodeExistsOnlySetNonNullAnnotation = !findAnnotations(typeNode, Pattern.compile("^(?:onlysetnonnull)$", Pattern.CASE_INSENSITIVE)).isEmpty();
 		JCClassDecl typeDecl = null;
 		if (typeNode.get() instanceof JCClassDecl) typeDecl = (JCClassDecl) typeNode.get();
 		long modifiers = typeDecl == null ? 0 : typeDecl.mods.flags;
@@ -185,6 +187,7 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 		}
 		
 		long access = toJavacModifier(level) | (fieldDecl.mods.flags & Flags.STATIC);
+		access = (access << 1) | (this.hasNodeExistsOnlySetNonNullAnnotation ? 1 : 0);
 		
 		JCMethodDecl createdSetter = createSetter(access, fieldNode, fieldNode.getTreeMaker(), sourceNode, onMethod, onParam);
 		Type fieldType = getMirrorForFieldType(fieldNode);
@@ -224,7 +227,23 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 		
 		JCExpression fieldRef = createFieldAccessor(treeMaker, field, FieldAccess.ALWAYS_FIELD);
 		JCAssign assign = treeMaker.Assign(fieldRef, treeMaker.Ident(fieldDecl.name));
-		
+		JCStatement assignTarget = treeMaker.Exec(assign);
+		Boolean hasNodeExistsOnlySetNonNullAnnotation = (access & 1) == 1;
+		access = access >> 1;
+		if (hasNodeExistsOnlySetNonNullAnnotation || !findAnnotations(field, Pattern.compile("^(?:onlysetnonnull)$", Pattern.CASE_INSENSITIVE)).isEmpty()) {
+			assignTarget = treeMaker.If(
+					treeMaker.Parens(
+							treeMaker.Binary(
+									CTC_NOT_EQUAL,
+									treeMaker.Literal(CTC_BOT, null),
+									treeMaker.Ident(fieldDecl.name)
+							)
+					),
+					treeMaker.Block(0L, List.of(assignTarget)),
+					null
+			);
+		}
+
 		ListBuffer<JCStatement> statements = new ListBuffer<JCStatement>();
 		List<JCAnnotation> copyableAnnotations = findCopyableAnnotations(field);
 		
